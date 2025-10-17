@@ -20,6 +20,8 @@
     ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.4); }
 
     .chart-container { position: relative; height: 40vh; width: 100%; }
+    .chart-container canvas, .stacked-chart canvas { transition: filter 0.3s ease, transform 0.3s ease; }
+    .chart-container canvas:hover, .stacked-chart canvas:hover { filter: drop-shadow(0 20px 35px rgba(30, 64, 175, 0.22)); }
     /* Layer two canvases for the Goal Progress card */
     .stacked-chart { position: relative; height: 42vh; width: 100%; }
     .stacked-chart canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
@@ -179,6 +181,7 @@
       let expenseChart = null;
       let goalBarsChart = null;
       let goalLinesChart = null;
+      let expenseCenterState = { label: 'Total Expenses', value: '' };
 
       // Chart.js plugin for subtle shadow glow
       const glowPlugin = {
@@ -199,12 +202,72 @@
         }
       };
 
+      const centerTextPlugin = {
+        id: 'centerText',
+        beforeDraw(chart) {
+          const { ctx, chartArea: { top, bottom, left, right } } = chart;
+          const centerX = (left + right) / 2;
+          const centerY = (top + bottom) / 2;
+          ctx.save();
+          ctx.textAlign = 'center';
+          ctx.fillStyle = '#475569';
+          ctx.font = '600 16px Inter';
+          ctx.fillText(expenseCenterState.label, centerX, centerY - 6);
+          ctx.font = '700 20px Inter';
+          ctx.fillStyle = '#1e293b';
+          ctx.fillText(expenseCenterState.value, centerX, centerY + 22);
+          ctx.restore();
+        }
+      };
+
+      const hoverLinePlugin = {
+        id: 'hoverLine',
+        afterDatasetsDraw(chart) {
+          const active = chart.tooltip?.getActiveElements?.() || chart.getActiveElements();
+          if (!active || active.length === 0) return;
+          const { ctx, chartArea: { top, bottom } } = chart;
+          const { element } = active[0];
+          if (!element) return;
+          const x = element.x;
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(x, bottom);
+          ctx.lineTo(x, top);
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 6]);
+          ctx.strokeStyle = 'rgba(59,130,246,0.35)';
+          ctx.stroke();
+          ctx.restore();
+        }
+      };
+
       // Gradient helpers
       const makeLinearGradient = (ctx, area, from, to) => {
         const gradient = ctx.createLinearGradient(0, area.bottom, 0, area.top);
         gradient.addColorStop(0, from);
         gradient.addColorStop(1, to);
         return gradient;
+      };
+
+      const hexToRgba = (hex, alpha = 1) => {
+        const sanitized = hex.replace('#', '');
+        const bigint = parseInt(sanitized, 16);
+        const r = (bigint >> 16) & 255;
+        const g = (bigint >> 8) & 255;
+        const b = bigint & 255;
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      };
+
+      const lightenColor = (input, amount = 0.1) => {
+        if (typeof input !== 'string') return input;
+        const clamp = v => Math.max(0, Math.min(255, v));
+        const sanitized = input.replace('#', '');
+        const num = parseInt(sanitized, 16);
+        let r = (num >> 16) + amount * 255;
+        let g = ((num >> 8) & 0x00ff) + amount * 255;
+        let b = (num & 0x0000ff) + amount * 255;
+        r = clamp(r); g = clamp(g); b = clamp(b);
+        return `rgba(${r}, ${g}, ${b}, 1)`;
       };
 
       // ---------------- Persistence ----------------
@@ -315,6 +378,8 @@
         const data = state.expenses.map(e => Number(e.amount || 0));
         if (expenseChart) expenseChart.destroy();
         const colors = generateColors(data.length);
+        const total = data.reduce((sum, val) => sum + val, 0);
+        expenseCenterState = { label: 'Total Expenses', value: formatCurrency(total) };
         expenseChart = new Chart(ctx, {
           type: 'doughnut',
           data: {
@@ -322,10 +387,22 @@
             datasets: [{
               label: 'Expenses',
               data,
-              backgroundColor: colors.map(c => c),
+              backgroundColor: (context) => {
+                const { chart, dataIndex } = context;
+                const baseColor = colors[dataIndex % colors.length];
+                const { ctx: chartCtx, chartArea } = chart;
+                if (!chartArea) return baseColor;
+                const gradient = chartCtx.createLinearGradient(chartArea.left, chartArea.bottom, chartArea.right, chartArea.top);
+                gradient.addColorStop(0, hexToRgba(baseColor, 0.4));
+                gradient.addColorStop(0.5, hexToRgba(baseColor, 0.7));
+                gradient.addColorStop(1, hexToRgba(baseColor, 1));
+                return gradient;
+              },
+              hoverBackgroundColor: colors.map(c => lightenColor(c, 0.12)),
               borderColor: '#fff',
               borderWidth: 2,
-              hoverOffset: 8
+              hoverOffset: 12,
+              borderAlign: 'inner'
             }]
           },
           options: {
@@ -333,12 +410,57 @@
             maintainAspectRatio: false,
             cutout: '62%',
             layout: { padding: 8 },
+            elements: { arc: { borderRadius: 12 } },
             plugins: {
-              legend: { position: 'right', labels: { boxWidth: 14, color: '#334155', font: { weight: 500 } } },
-              tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${formatCurrency(ctx.parsed)}` } }
+              legend: {
+                position: 'right',
+                labels: {
+                  boxWidth: 14,
+                  color: '#334155',
+                  font: { weight: 500 }
+                }
+              },
+              tooltip: {
+                backgroundColor: 'rgba(15,23,42,0.92)',
+                borderColor: 'rgba(255,255,255,0.2)',
+                borderWidth: 1,
+                padding: 12,
+                titleFont: { size: 14, weight: '700' },
+                bodyFont: { size: 13, weight: '500' },
+                callbacks: {
+                  label: (ctx) => {
+                    const value = ctx.parsed;
+                    const pct = total ? ((value / total) * 100).toFixed(1) : 0;
+                    return `${ctx.label}: ${formatCurrency(value)} (${pct}%)`;
+                  }
+                }
+              }
             },
-            animation: { animateRotate: true, animateScale: true }
+            animation: {
+              animateRotate: true,
+              animateScale: true,
+              duration: 900,
+              easing: 'easeOutQuart'
+            },
+            onHover: (evt, elements) => {
+              canvas.style.cursor = elements.length ? 'pointer' : 'default';
+              if (elements.length) {
+                const { index } = elements[0];
+                const label = labels[index];
+                const value = data[index];
+                expenseCenterState = { label, value: formatCurrency(value) };
+              } else {
+                expenseCenterState = { label: 'Total Expenses', value: formatCurrency(total) };
+              }
+              expenseChart.draw();
+            },
+            onLeave: () => {
+              expenseCenterState = { label: 'Total Expenses', value: formatCurrency(total) };
+              canvas.style.cursor = 'default';
+              expenseChart.draw();
+            }
           }
+          plugins: [centerTextPlugin, glowPlugin]
         });
       };
 
@@ -365,9 +487,11 @@
                   if (!chartArea) return 'rgba(16,185,129,0.6)';
                   return makeLinearGradient(c, chartArea, 'rgba(16,185,129,0.35)', 'rgba(16,185,129,0.85)');
                 },
+                hoverBackgroundColor: 'rgba(16, 185, 129, 0.95)',
                 borderColor: 'rgba(16, 185, 129, 1)',
                 borderWidth: 1,
                 borderRadius: 10,
+                borderSkipped: false,
                 barThickness: 'flex'
               },
               {
@@ -378,9 +502,11 @@
                   if (!chartArea) return 'rgba(99,102,241,0.2)';
                   return makeLinearGradient(c, chartArea, 'rgba(99,102,241,0.15)', 'rgba(99,102,241,0.35)');
                 },
+                hoverBackgroundColor: 'rgba(99,102,241,0.55)',
                 borderColor: 'rgba(99,102,241,1)',
                 borderWidth: 1,
                 borderRadius: 10,
+                borderSkipped: false,
                 barThickness: 'flex'
               }
             ]
@@ -389,12 +515,48 @@
             responsive: true,
             maintainAspectRatio: false,
             layout: { padding: { top: 8, right: 8, left: 8, bottom: 0 } },
+            interaction: { intersect: false, mode: 'index' },
             scales: {
-              x: { stacked: true, grid: { display: false } },
-              y: { stacked: true, beginAtZero: true, ticks: { callback: v => '$' + v }, grid: { color: 'rgba(51,65,85,0.08)' } }
+              x: {
+                stacked: true,
+                grid: { display: false },
+                ticks: { color: '#475569', font: { weight: 600 } }
+              },
+              y: {
+                stacked: true,
+                beginAtZero: true,
+                ticks: { callback: v => '$' + v, color: '#475569' },
+                grid: { color: 'rgba(51,65,85,0.08)', drawBorder: false }
+              }
             },
-            plugins: { legend: { position: 'top' } },
-            animation: { duration: 700, easing: 'easeOutQuart' }
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: { usePointStyle: true, color: '#334155', font: { weight: 600 } }
+              },
+              tooltip: {
+                backgroundColor: 'rgba(15,23,42,0.92)',
+                borderColor: 'rgba(99,102,241,0.4)',
+                borderWidth: 1,
+                padding: 12,
+                callbacks: {
+                  beforeTitle: () => 'Goal Snapshot',
+                  label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}`,
+                  afterBody: (items) => {
+                    if (!items.length) return '';
+                    const idx = items[0].dataIndex;
+                    const saved = savedData[idx];
+                    const target = (state.goals[idx]?.target) || 0;
+                    const pct = target ? Math.min(100, (saved / target) * 100).toFixed(1) : 0;
+                    return `Progress: ${pct}%`;
+                  }
+                }
+              }
+            },
+            animation: { duration: 700, easing: 'easeOutQuart' },
+            onHover: (evt, elements) => {
+              barsCanvas.style.cursor = elements.length ? 'pointer' : 'default';
+            }
           },
           plugins: [glowPlugin]
         });
@@ -410,10 +572,29 @@
           label: g.name + ' deposits',
           data: (state.goalHistory[g.id] || []).map(p => ({ x: p.t, y: p.y })),
           borderColor: colorPool[idx % colorPool.length],
-          backgroundColor: 'transparent',
+          backgroundColor: (ctx) => {
+            const { chart } = ctx; const { ctx: c, chartArea } = chart;
+            if (!chartArea) return hexToRgba(colorPool[idx % colorPool.length], 0.18);
+            const gradient = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+            gradient.addColorStop(0, hexToRgba(colorPool[idx % colorPool.length], 0.4));
+            gradient.addColorStop(1, hexToRgba(colorPool[idx % colorPool.length], 0));
+            return gradient;
+          },
           borderWidth: 3,
-          tension: 0.3,
-          pointRadius: 0
+          tension: 0.35,
+          fill: 'origin',
+          pointRadius: 3,
+          pointHoverRadius: 7,
+          pointBackgroundColor: hexToRgba(colorPool[idx % colorPool.length], 0.9),
+          pointBorderColor: '#fff',
+          pointBorderWidth: 2,
+          pointHoverBorderWidth: 2,
+          pointHoverBackgroundColor: '#fff',
+          pointHoverBorderColor: colorPool[idx % colorPool.length],
+          segment: {
+            borderJoinStyle: 'round',
+            borderCapStyle: 'round'
+          }
         }));
         if (goalLinesChart) goalLinesChart.destroy();
         goalLinesChart = new Chart(linesCtx, {
@@ -423,14 +604,32 @@
             maintainAspectRatio: false,
             parsing: false,
             interaction: { intersect: false, mode: 'index' },
-            plugins: { legend: { display: false } },
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: { color: '#334155', usePointStyle: true, font: { weight: 600 } }
+              },
+              tooltip: {
+                backgroundColor: 'rgba(15,23,42,0.92)',
+                borderColor: 'rgba(59,130,246,0.4)',
+                borderWidth: 1,
+                padding: 12,
+                callbacks: {
+                  title: items => items[0]?.dataset?.label || 'Goal Deposits',
+                  label: ctx => `${new Date(ctx.parsed.x).toLocaleDateString()}: ${formatCurrency(ctx.parsed.y)}`
+                }
+              }
+            },
             animations: { tension: { duration: 800, easing: 'easeInOutCubic', from: 0.4, to: 0.2, loop: false } },
             scales: {
               x: { type: 'time', time: { unit: 'week' }, grid: { color: 'rgba(51,65,85,0.06)' } },
               y: { beginAtZero: true, grid: { color: 'rgba(51,65,85,0.06)' } }
+            },
+            onHover: (evt, elements) => {
+              linesCanvas.style.cursor = elements.length ? 'pointer' : 'default';
             }
           },
-          plugins: [glowPlugin]
+          plugins: [glowPlugin, hoverLinePlugin]
         });
       };
 
