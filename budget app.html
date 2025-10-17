@@ -510,16 +510,21 @@
         pages.forEach(page => {
           page.classList.toggle('active', page.id === pageId);
         });
+        const activateButton = btn => {
+          btn.classList.add('bg-gradient-to-r', 'from-blue-600', 'to-indigo-600', 'text-white');
+          btn.classList.remove('bg-white/70', 'text-slate-800');
+        };
+        const deactivateButton = btn => {
+          btn.classList.add('bg-white/70', 'text-slate-800');
+          btn.classList.remove('bg-gradient-to-r', 'from-blue-600', 'to-indigo-600', 'text-white');
+        };
+
         if (pageId === 'page-budget') {
-          navBudgetBtn.classList.add('bg-blue-500', 'text-white');
-          navBudgetBtn.classList.remove('bg-gray-200', 'text-gray-700');
-          navGoalsBtn.classList.remove('bg-blue-500', 'text-white');
-          navGoalsBtn.classList.add('bg-gray-200', 'text-gray-700');
+          activateButton(navBudgetBtn);
+          deactivateButton(navGoalsBtn);
         } else {
-          navGoalsBtn.classList.add('bg-blue-500', 'text-white');
-          navGoalsBtn.classList.remove('bg-gray-200', 'text-gray-700');
-          navBudgetBtn.classList.remove('bg-blue-500', 'text-white');
-          navBudgetBtn.classList.add('bg-gray-200', 'text-gray-700');
+          activateButton(navGoalsBtn);
+          deactivateButton(navBudgetBtn);
           // Re-render charts whenever entering Goals page for fresh sync
           renderCharts();
         }
